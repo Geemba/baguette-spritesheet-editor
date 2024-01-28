@@ -16,24 +16,8 @@ fn main()
 
 type Tiles = IndexMap<TilePos,ui::Rect>;
 
-struct Application
-{
-    path: PathBuf,
-    asset_preview_scale: f32,
-    selected_tile: Option<(usize, ui::Rect)>,
-
-    /// drag state to check if we need to draw
-    dragging: Option<Tiles>,
-
-    /// the tiles we will actually draw
-    tiles: Tiles,
-
-    undos: TilesHistory,
-    redos: TilesHistory
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-#[derive(Debug)]
+#[cfg_attr(debug_assertions, derive(Debug))]
 struct TilePos
 {
     x: i32, y: i32
@@ -71,6 +55,33 @@ impl TilesHistory
     }
 }
 
+enum Path
+{
+    Some
+    {
+        path: PathBuf,
+        rows: usize,
+        columns: usize
+    },
+    NotChosen
+}
+
+struct Application
+{
+    path: Path,
+    asset_preview_scale: f32,
+    selected_tile: Option<(usize, ui::Rect)>,
+
+    /// drag state to check if we need to draw
+    dragging: Option<Tiles>,
+
+    /// the tiles we will actually draw
+    tiles: Tiles,
+
+    undos: TilesHistory,
+    redos: TilesHistory
+}
+
 impl app::State for Application
 {
     fn new(app: &mut app::App) -> Self where Self: Sized
@@ -79,7 +90,7 @@ impl app::State for Application
         
         Self
         {
-            path: PathBuf::new(),
+            path: Path::NotChosen,
             asset_preview_scale: 1.,
             selected_tile: None,
 
@@ -133,7 +144,7 @@ impl Application
                             .set_file_name("choose a spritesheet")
                             .pick_file()
                         {
-                            self.path = path
+                            self.path = Path::Some { path, rows: 1, columns: 1 }
                         }
                     }
                     
@@ -171,40 +182,68 @@ impl Application
         })
         .show(app.ui().context(), |ui|
         {
-            if !self.path.is_file()
+            let Path::Some { ref path, ref mut rows, ref mut columns } = self.path else
             {
                 return
-            }
+            };
     
-            ui.label(self.path.to_string_lossy());
+            ui.label(path.to_string_lossy());
 
             ui.separator();
-
-            ui.add
-            (
-                ui::Slider::new(&mut self.asset_preview_scale, 0.3..=3.)
-                    .handle_shape(ui::style::HandleShape::Rect
-                    {
-                        aspect_ratio: 0.75
-                    })
-                    .trailing_fill(true)
-                    .show_value(false)
-            );
+            
             let scale = 100. * self.asset_preview_scale;
 
             let collapsable_contents = |ui: &mut ui::egui::Ui|
             {
+                ui.group(|ui| ui.vertical(|ui|
+                {
+                    ui.add
+                    (
+                        ui::Slider::new(&mut self.asset_preview_scale, 0.3..=3.)
+                            .handle_shape(ui::style::HandleShape::Rect
+                            {
+                                aspect_ratio: 0.75
+                            })
+                            .trailing_fill(true)
+                            .show_value(false)
+                    );
+
+                        ui.horizontal
+                        (
+                            |ui|
+                            {
+                                ui.label(ui::RichText::new("row").monospace());
+                                ui.add(ui::DragValue::new(rows));
+                            }
+                        );
+                        
+                        ui.horizontal
+                        (
+                            |ui|
+                            {
+                                ui.label(ui::RichText::new("columns").monospace());
+                                ui.add(ui::DragValue::new(columns));
+                            }
+                        );
+                    
+                }));
+
                 let style = ui.style_mut();
 
                 style.spacing.button_padding = (0.1, 0.1).into();
                 style.spacing.item_spacing = (2.5, 2.5).into();
 
-                style.visuals.widgets.hovered.bg_stroke = ui::Stroke::new(scale / 100., ui::Color32::LIGHT_GRAY);
-                style.visuals.selection.stroke = ui::Stroke::new(scale / 25., ui::Color32::LIGHT_GRAY);
+                style.visuals.widgets.hovered.bg_stroke = ui::Stroke::new(2.5, ui::Color32::LIGHT_GRAY);
+                style.visuals.selection.stroke = ui::Stroke::new(5., ui::Color32::LIGHT_GRAY);
 
-                for (idx, image)
-                    in load_images("file://D:/dev/Rust/tilemap test/test_sheet.png", 2,2)
-                        .enumerate()
+                let uri = "file://".to_owned() + path
+                    .to_str()
+                    .expect
+                    (
+                        "received invalid UTF-8, why not just use ostr as source anyway?"
+                    );
+
+                for (idx, image) in load_images(uri, *rows, *columns).enumerate()
                 {
                     let selected = self.selected_tile
                         .is_some_and(|(sel_idx, ..)| idx == sel_idx);
@@ -230,7 +269,9 @@ impl Application
             let header_text = ui::RichText::new("tiles")
                 .size(15.)
                 .monospace()
-                .color(ui::Color32::from_rgb(100, 100, 100));
+                .color(ui::Color32::from_gray(100));
+
+            
 
             ui::CollapsingHeader::new(header_text)
                 .default_open(true)
@@ -257,7 +298,7 @@ impl Application
                 let mut pos = ui.plot_from_screen(screen_pos);
 
                 let floor_pos = plot::PlotPoint { x: pos.x.floor(), y: pos.y.floor() };
-    
+
                 pos.x = floor_pos.x.floor() + 0.5;
                 pos.y = floor_pos.y.floor() + 0.5;
     
@@ -268,7 +309,7 @@ impl Application
                 // so we just return
                 let Some((.., selected_uv)) = self.selected_tile else
                 {
-                    return draw_tiles(&mut self.tiles, ui)
+                    return
                 };
     
                 if response.drag_started_by(ui::PointerButton::Primary)
@@ -338,7 +379,7 @@ impl Application
 
                 .x_grid_spacer(plot::log_grid_spacer(1))
                 .y_grid_spacer(plot::log_grid_spacer(1))
-
+            
                 .allow_double_click_reset(false)
                 
                 .allow_drag(false)
@@ -448,14 +489,14 @@ impl Application
 
 fn load_images<'a>
 (
-    image: impl Into<ui::ImageSource<'a>>,
+    uri: impl Into<std::borrow::Cow<'a, str>>,
     rows: usize,
     columns: usize
 ) -> impl Iterator<Item = ui::Image<'a>>
 {
     let mut items = Vec::with_capacity(rows * columns);
     
-    let image = ui::Image::new(image);
+    let image = ui::Image::from_uri(uri);
 
     for column in 0..columns
     {
