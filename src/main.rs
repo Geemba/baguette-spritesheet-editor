@@ -33,6 +33,7 @@ struct Application
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug)]
 struct TilePos
 {
     x: i32, y: i32
@@ -58,10 +59,15 @@ impl TilesHistory
         self.0.push_back(tiles)
     }
 
-    /// return then last added values
+    /// returns the last values added or `None` if the queue has been emptied
     fn pop(&mut self) -> Option<IndexMap<TilePos, ui::Rect>>
     {
         self.0.pop_back()
+    }
+
+    fn clear(&mut self)
+    {
+        self.0.clear()
     }
 }
 
@@ -267,6 +273,7 @@ impl Application
     
                 if response.drag_started_by(ui::PointerButton::Primary)
                 {
+                    self.redos.clear();
                     self.dragging = Some(indexmap::IndexMap::with_capacity(8))
                 }
                 else if response.drag_released_by(ui::PointerButton::Primary)
@@ -368,20 +375,27 @@ impl Application
                 return
             };
 
-            let mut redo_tiles = IndexMap::new();
+            // here we will gather the tiles we are replacing with the undo tiles,
+            // so that we can use them as redo operation later
+            let mut redo_tiles = IndexMap::with_capacity(undo_tiles.len());
 
             for (pos, uv) in undo_tiles
             {
                 if uv == ui::Rect::NOTHING
                 {
-                    if let Some(tile) = self.tiles.remove(&pos)
+                    match self.tiles.remove(&pos)
                     {
-                        redo_tiles.insert(pos, tile);
-                    }
+                        Some(old_uv) => redo_tiles.insert(pos, old_uv),
+                        None => redo_tiles.insert(pos, ui::Rect::NOTHING)
+                    };
                 }
-                else if let Some(tile) = self.tiles.insert(pos, uv)
+                else
                 {
-                    redo_tiles.insert(pos, tile);
+                    match self.tiles.insert(pos, uv)
+                    {
+                        Some(old_uv) => redo_tiles.insert(pos, old_uv),
+                        None => redo_tiles.insert(pos, ui::Rect::NOTHING)
+                    };
                 }
             }
 
@@ -398,32 +412,38 @@ impl Application
                 input::KeyCode::ShiftLeft
             )
         {
-            let Some(redo_tiles) = self.redos.pop() else 
+            let Some(redo_tiles) = self.redos.pop() else
             {
                 return
             };
 
-            let mut undo_tiles = IndexMap::new();
+            // here we will gather the tiles we are replacing with the redo tiles,
+            // so that we can use them as undo operation later
+            let mut undo_tiles = IndexMap::with_capacity(redo_tiles.len());
 
             for (pos, uv) in redo_tiles
             {
                 if uv == ui::Rect::NOTHING
                 {
-                    if let Some(tile) = self.tiles.remove(&pos)
+                    match self.tiles.remove(&pos)
                     {
-                        undo_tiles.insert(pos, tile);
-                    }
+                        Some(old_uv) => undo_tiles.insert(pos, old_uv),
+                        None => undo_tiles.insert(pos, ui::Rect::NOTHING)
+                    };
                 }
-                else if let Some(tile) = self.tiles.insert(pos, uv)
+                else
                 {
-                    undo_tiles.insert(pos, tile);
+                    match self.tiles.insert(pos, uv)
+                    {
+                        Some(old_uv) => undo_tiles.insert(pos, old_uv),
+                        None => undo_tiles.insert(pos, ui::Rect::NOTHING)
+                    };
                 }
             }
 
             self.undos.add(undo_tiles)
         }
     }
-
 }
 
 fn load_images<'a>
