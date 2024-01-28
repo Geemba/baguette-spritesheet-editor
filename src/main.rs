@@ -25,10 +25,11 @@ struct Application
     /// drag state to check if we need to draw
     dragging: Option<Tiles>,
 
-    /// the tiles we actually render each frame
+    /// the tiles we will actually draw
     tiles: Tiles,
-    /// cronology of the tiles after each modification
-    tiles_history: TilesHistory
+
+    undos: TilesHistory,
+    redos: TilesHistory
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -46,11 +47,6 @@ impl TilesHistory
         Self(Default::default(), 5)
     }
 
-    //fn is_empty(&self) -> bool
-    //{
-    //    self.0.is_empty()
-    //}
-
     /// add an undo operation
     fn add(&mut self, tiles: IndexMap<TilePos, ui::Rect>)
     {
@@ -62,7 +58,8 @@ impl TilesHistory
         self.0.push_back(tiles)
     }
 
-    fn undo(&mut self) -> Option<IndexMap<TilePos, ui::Rect>>
+    /// return then last added values
+    fn pop(&mut self) -> Option<IndexMap<TilePos, ui::Rect>>
     {
         self.0.pop_back()
     }
@@ -79,9 +76,12 @@ impl app::State for Application
             path: PathBuf::new(),
             asset_preview_scale: 1.,
             selected_tile: None,
+
             tiles: Tiles::default(),
-            tiles_history: TilesHistory::new(),
-            dragging: None
+            undos: TilesHistory::new(),
+            redos: TilesHistory::new(),
+
+            dragging: None,
         }
     }
 
@@ -92,23 +92,7 @@ impl app::State for Application
         
         self.editor_grid(app);
 
-        if app.input.get_key_down
-        (
-            input::KeyCode::KeyZ) && app.input.get_key_holding(input::KeyCode::ControlLeft
-        )
-        {
-            let Some(undo_tiles) = self.tiles_history.undo() else 
-            {
-                return
-            };
-
-            for (pos, uv) in undo_tiles
-            {
-                if uv == ui::Rect::NOTHING { self.tiles.remove(&pos); }
-                else { self.tiles.insert(pos, uv); }
-            }
-        }
-
+        self.check_input(app);
     }
 }
 
@@ -154,16 +138,12 @@ impl Application
                         .color(ui::Color32::from_gray(240))
                     );
  
-                    if reset.clicked()
+                    if reset.clicked() && !self.tiles.is_empty()
                     {
-                        let tiles = self.tiles.clone();    
+                        let tiles = self.tiles.clone();
+                        self.tiles.clear();
 
-                        for (.., uv) in self.tiles.iter_mut()
-                        {
-                            *uv = ui::Rect::NOTHING
-                        }
-
-                        self.tiles_history.add(tiles);
+                        self.undos.add(tiles);
                     }
                 }
             )
@@ -291,7 +271,7 @@ impl Application
                 }
                 else if response.drag_released_by(ui::PointerButton::Primary)
                 {
-                    self.tiles_history.add(self.dragging.take().unwrap())
+                    self.undos.add(self.dragging.take().unwrap())
                 }
 
                 if let Some(ref mut current_edit_tiles) = self.dragging
@@ -370,6 +350,80 @@ impl Application
             })
             .show(app.ui().context(), panel_contents);
     }
+
+    fn check_input(&mut self, app: &mut app::App)
+    {
+        if app.input.get_key_down(input::KeyCode::KeyZ)
+            && app.input.get_key_holding
+            (
+                input::KeyCode::ControlLeft
+            )
+            && !app.input.get_key_holding
+            (
+                input::KeyCode::ShiftLeft
+            )
+        {
+            let Some(undo_tiles) = self.undos.pop() else 
+            {
+                return
+            };
+
+            let mut redo_tiles = IndexMap::new();
+
+            for (pos, uv) in undo_tiles
+            {
+                if uv == ui::Rect::NOTHING
+                {
+                    if let Some(tile) = self.tiles.remove(&pos)
+                    {
+                        redo_tiles.insert(pos, tile);
+                    }
+                }
+                else if let Some(tile) = self.tiles.insert(pos, uv)
+                {
+                    redo_tiles.insert(pos, tile);
+                }
+            }
+
+            self.redos.add(redo_tiles)
+        }
+        
+        if app.input.get_key_down(input::KeyCode::KeyZ)
+            && app.input.get_key_holding
+            (
+                input::KeyCode::ControlLeft
+            )
+            && app.input.get_key_holding
+            (
+                input::KeyCode::ShiftLeft
+            )
+        {
+            let Some(redo_tiles) = self.redos.pop() else 
+            {
+                return
+            };
+
+            let mut undo_tiles = IndexMap::new();
+
+            for (pos, uv) in redo_tiles
+            {
+                if uv == ui::Rect::NOTHING
+                {
+                    if let Some(tile) = self.tiles.remove(&pos)
+                    {
+                        undo_tiles.insert(pos, tile);
+                    }
+                }
+                else if let Some(tile) = self.tiles.insert(pos, uv)
+                {
+                    undo_tiles.insert(pos, tile);
+                }
+            }
+
+            self.undos.add(undo_tiles)
+        }
+    }
+
 }
 
 fn load_images<'a>
