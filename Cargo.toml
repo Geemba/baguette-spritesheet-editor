@@ -10,5 +10,5 @@ baguette = { path = "D:/dev/Rust/baguette"}
 rfd = "*"
 egui_extras =  { version = "*", features = ["all_loaders"] }
 egui_plot = "*"
-image = { version = "0.24", default-features = false, features = ["png"] }
+#image = { version = "0.24", default-features = false, features = ["png"] }
 indexmap = "*"
