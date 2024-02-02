@@ -1,3 +1,4 @@
+use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use baguette::*;
@@ -18,6 +19,7 @@ type Tiles = IndexMap<TilePos,ui::Rect>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(debug_assertions, derive(Debug))]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct TilePos
 {
     x: i32, y: i32
@@ -110,6 +112,26 @@ impl app::State for Application
         self.editor_grid(app);
 
         self.check_input(app);
+
+        if app.input.get_key_down(input::KeyCode::Enter)
+        {
+            self.save_tiles().expect("sei stato mhanzato")
+        }
+        
+        if app.input.get_key_down(input::KeyCode::KeyA)
+        {
+            if let Ok(saved_tile_data) = self.load_tiles()
+            {
+                self.tiles.clear();
+                self.undos.clear();
+                self.redos.clear();
+                
+                for tile in saved_tile_data
+                {
+                    self.tiles.insert(tile.0, tile.1);
+                }
+            }
+        }
     }
 }
 
@@ -485,7 +507,64 @@ impl Application
             self.undos.add(undo_tiles)
         }
     }
+
+    fn save_tiles(&self) -> bincode::Result<()>
+    {
+        let Path::Some { ref path, .. } = self.path else
+        {
+            return bincode::Result::Err
+            (
+                Box::new(bincode::ErrorKind::Custom("no path chosen".to_owned()))
+            )
+        };
+
+        let path = path.parent().unwrap().join("saved.bag");
+    
+        let mut tiles = SavedTileData::new();
+        
+        for tile in &self.tiles
+        {
+            tiles.push((*tile.0, *tile.1))
+        }
+    
+        let mut file = std::fs::File::create(path)?;
+        let data = bincode::serialize(&tiles)?;
+        file.write_all(&data)?;
+    
+        Ok(())
+    }
+    
+    fn load_tiles(&self) -> bincode::Result<SavedTileData>
+    {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("", &["bag"])
+            .set_file_name("load spritesheet data")
+            .pick_file()
+        else
+        {
+            return bincode::Result::Err
+            (
+                Box::new(bincode::ErrorKind::Custom("invalid path".to_owned()))
+            )
+        };
+
+        let mut file = std::fs::File::open(path)?;
+
+        let mut buf = Vec::new();
+
+        file.read_to_end(&mut buf)?;
+    
+        bincode::deserialize::<SavedTileData>(&buf)
+    }
 }
+
+type SavedTileData = Vec<(TilePos,ui::Rect)>;
+
+//#[derive(serde::Serialize, serde::Deserialize)]
+//struct SavedTileData
+//{
+//    tiles: Vec<([i32;2], ui::Rect)>
+//}
 
 fn load_images<'a>
 (
