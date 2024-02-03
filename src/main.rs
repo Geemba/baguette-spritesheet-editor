@@ -1,10 +1,10 @@
-use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::{io::{Read, Write}, path::PathBuf,};
 
-use baguette::*;
-use baguette::app::ui;
+use baguette::{*, app::ui};
+
 use egui_plot as plot;
-use std::collections::VecDeque;
+use serde::{Deserialize, Serialize};
+
 use indexmap::IndexMap;
 
 fn main()
@@ -15,62 +15,20 @@ fn main()
         .run()
 }
 
-type Tiles = IndexMap<TilePos,ui::Rect>;
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(debug_assertions, derive(Debug))]
-#[derive(serde::Serialize, serde::Deserialize)]
-struct TilePos
+#[derive(Clone)]
+#[derive(Serialize,Deserialize)]
+struct SpriteSheet
 {
-    x: i32, y: i32
-}
-
-struct TilesHistory(VecDeque<Tiles>, u16);
-
-impl TilesHistory
-{
-    fn new() -> Self
-    {
-        Self(Default::default(), 5)
-    }
-
-    /// add an undo operation
-    fn add(&mut self, tiles: IndexMap<TilePos, ui::Rect>)
-    {
-        if self.0.len() >= self.1 as usize
-        {
-            self.0.pop_front();
-        }
-
-        self.0.push_back(tiles)
-    }
-
-    /// returns the last values added or `None` if the queue has been emptied
-    fn pop(&mut self) -> Option<IndexMap<TilePos, ui::Rect>>
-    {
-        self.0.pop_back()
-    }
-
-    fn clear(&mut self)
-    {
-        self.0.clear()
-    }
-}
-
-enum Path
-{
-    Some
-    {
-        path: PathBuf,
-        rows: usize,
-        columns: usize
-    },
-    NotChosen
+    path: PathBuf,
+    rows: usize,
+    columns: usize
 }
 
 struct Application
 {
-    path: Path,
+    /// the path we loaded the spritesheet from 
+    sprite_sheet: Option<SpriteSheet>,
+    workspace_path: Option<PathBuf>,
     asset_preview_scale: f32,
     selected_tile: Option<(usize, ui::Rect)>,
 
@@ -92,7 +50,7 @@ impl app::State for Application
         
         Self
         {
-            path: Path::NotChosen,
+            sprite_sheet: None,
             asset_preview_scale: 1.,
             selected_tile: None,
 
@@ -101,6 +59,7 @@ impl app::State for Application
             redos: TilesHistory::new(),
 
             dragging: None,
+            workspace_path: None,
         }
     }
 
@@ -112,26 +71,6 @@ impl app::State for Application
         self.editor_grid(app);
 
         self.check_input(app);
-
-        if app.input.get_key_down(input::KeyCode::Enter)
-        {
-            self.save_tiles().expect("sei stato mhanzato")
-        }
-        
-        if app.input.get_key_down(input::KeyCode::KeyA)
-        {
-            if let Ok(saved_tile_data) = self.load_tiles()
-            {
-                self.tiles.clear();
-                self.undos.clear();
-                self.redos.clear();
-                
-                for tile in saved_tile_data
-                {
-                    self.tiles.insert(tile.0, tile.1);
-                }
-            }
-        }
     }
 }
 
@@ -148,42 +87,49 @@ impl Application
 
         let contents = |ui: &mut ui::egui::Ui|
         {
+            let text_style = |text| ui::RichText::new(text)
+                .size(15.)
+                .color(ui::Color32::from_gray(200));
+
             ui.horizontal_centered
             (
                 |ui|
                 {
-                    let file = ui.button
-                    (
-                        ui::RichText::new("file")
-                        .size(15.)
-                        .color(ui::Color32::from_gray(240))
-                    );
-
-                    if file.clicked()
+                    ui.menu_button(text_style("file"), |ui| 
                     {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("", &["png"])
-                            .set_file_name("choose a spritesheet")
-                            .pick_file()
+                        // open a new empty tilemap
+                        let new = ui.button
+                        (
+                            text_style("new")
+                        );
+
+                        if new.clicked()
                         {
-                            self.path = Path::Some { path, rows: 1, columns: 1 }
+                            self.select_spritesheet()
                         }
-                    }
-                    
-                    let reset = ui.button
-                    (
-                        ui::RichText::new("reset")
-                        .size(15.)
-                        .color(ui::Color32::from_gray(240))
-                    );
- 
-                    if reset.clicked() && !self.tiles.is_empty()
-                    {
-                        let tiles = self.tiles.clone();
-                        self.tiles.clear();
 
-                        self.undos.add(tiles);
-                    }
+                        // load a tilemap workspace
+                        let load = ui.button
+                        (
+                            text_style("open saved")
+                        );
+
+                        if load.clicked()
+                        {
+                            let _ = self.load_workspace();
+                        }
+
+                        // reset button
+                        let reset = ui.button(text_style("clear"));
+                    
+                        if reset.clicked() && !self.tiles.is_empty()
+                        {
+                            let tiles = self.tiles.clone();
+                            self.tiles.clear();
+                        
+                            self.undos.add(tiles);
+                        }
+                    })
                 }
             )
         };
@@ -191,6 +137,18 @@ impl Application
         ui::TopBottomPanel::top("path")
             .frame(frame)
             .show(app.ui().context(), contents);
+    }
+
+    fn select_spritesheet(&mut self)
+    {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("", &["png"])
+            .set_file_name("choose a spritesheet")
+            .pick_file()
+            {
+                self.sprite_sheet = Some(SpriteSheet { path, rows: 1, columns: 1 });
+                self.workspace_path = None
+            }
     }
 
     fn bottom_panel(&mut self, app: &mut app::App)
@@ -204,7 +162,7 @@ impl Application
         })
         .show(app.ui().context(), |ui|
         {
-            let Path::Some { ref path, ref mut rows, ref mut columns } = self.path else
+            let Some(SpriteSheet { ref path, ref mut rows, ref mut columns }) = self.sprite_sheet else
             {
                 return
             };
@@ -247,7 +205,6 @@ impl Application
                                 ui.add(ui::DragValue::new(columns));
                             }
                         );
-                    
                 }));
 
                 let style = ui.style_mut();
@@ -492,7 +449,7 @@ impl Application
                     {
                         Some(old_uv) => undo_tiles.insert(pos, old_uv),
                         None => undo_tiles.insert(pos, ui::Rect::NOTHING)
-                    };
+                    }
                 }
                 else
                 {
@@ -500,43 +457,74 @@ impl Application
                     {
                         Some(old_uv) => undo_tiles.insert(pos, old_uv),
                         None => undo_tiles.insert(pos, ui::Rect::NOTHING)
-                    };
-                }
+                    }
+                };
             }
 
             self.undos.add(undo_tiles)
         }
+
+        if app.input.get_key_down(input::KeyCode::KeyS)
+            && app.input.get_key_holding(input::KeyCode::ControlLeft)
+        {
+            let _ = self.save_workspace();
+        }
     }
 
-    fn save_tiles(&self) -> bincode::Result<()>
+    fn save_workspace(&mut self) -> bincode::Result<()>
     {
-        let Path::Some { ref path, .. } = self.path else
+        let sprite_sheet = match self.sprite_sheet
         {
-            return bincode::Result::Err
-            (
-                Box::new(bincode::ErrorKind::Custom("no path chosen".to_owned()))
-            )
+            Some(ref sprite_sheet) => sprite_sheet.clone(),
+            None =>
+            {
+                self.select_spritesheet();
+                self.sprite_sheet.as_ref().unwrap().clone()
+            }
         };
 
-        let path = path.parent().unwrap().join("saved.bag");
-    
-        let mut tiles = SavedTileData::new();
-        
+        // create the savedata struct
+        let mut data = SavedData { sprite_sheet, tiles: Vec::new() };
+
+        // here we pass the tiles we have drawn to the vec
         for tile in &self.tiles
         {
-            tiles.push((*tile.0, *tile.1))
+            data.tiles.push((*tile.0, *tile.1))
         }
-    
+
+        if self.workspace_path.is_none()
+        {
+            match rfd::FileDialog::new()
+                    .add_filter("", &["bag"])
+                    .set_file_name("new tilemap.bag")
+                    .save_file()
+            {
+                Some(path) =>
+                {
+                    self.workspace_path = Some(path)
+                },
+                None => return bincode::Result::Err
+                (
+                    Box::new(bincode::ErrorKind::Custom("failed to crate save file".to_owned()))
+                )
+            }
+        }
+        
+        let path = self.workspace_path.as_ref().expect
+        (
+            "this call should have been unreachable as none"
+        );
+
         let mut file = std::fs::File::create(path)?;
-        let data = bincode::serialize(&tiles)?;
+        let data = bincode::serialize(&data)?;
         file.write_all(&data)?;
     
         Ok(())
     }
     
-    fn load_tiles(&self) -> bincode::Result<SavedTileData>
+    fn load_workspace(&mut self) -> bincode::Result<()>
     {
-        let Some(path) = rfd::FileDialog::new()
+        let Some(worskspace_path) = rfd::FileDialog::new()
             .add_filter("", &["bag"])
             .set_file_name("load spritesheet data")
             .pick_file()
@@ -548,23 +536,34 @@ impl Application
             )
         };
 
-        let mut file = std::fs::File::open(path)?;
+        let mut file = std::fs::File::open(&worskspace_path)?;
 
         let mut buf = Vec::new();
 
         file.read_to_end(&mut buf)?;
     
-        bincode::deserialize::<SavedTileData>(&buf)
+        match bincode::deserialize::<SavedData>(&buf)
+        {
+            Ok(SavedData { sprite_sheet, tiles }) =>
+            {
+                self.tiles.clear();
+                self.undos.clear();
+                self.redos.clear();
+
+                self.sprite_sheet = Some(sprite_sheet);
+                self.workspace_path = Some(worskspace_path);
+
+                for (pos,uv) in tiles
+                {
+                    self.tiles.insert(pos, uv);
+                }
+                
+                Ok(())
+            }
+            Err(err) => Err(err)
+        }
     }
 }
-
-type SavedTileData = Vec<(TilePos,ui::Rect)>;
-
-//#[derive(serde::Serialize, serde::Deserialize)]
-//struct SavedTileData
-//{
-//    tiles: Vec<([i32;2], ui::Rect)>
-//}
 
 fn load_images<'a>
 (
@@ -598,4 +597,56 @@ fn load_images<'a>
     }
 
     items.into_iter()
+}
+
+type Tiles = IndexMap<TilePos,ui::Rect>;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TilePos
+{
+    x: i32, y: i32
+}
+
+struct TilesHistory(std::collections::VecDeque<Tiles>, u16);
+
+impl TilesHistory
+{
+    fn new() -> Self
+    {
+        Self(Default::default(), 5)
+    }
+
+    /// add an undo operation
+    fn add(&mut self, tiles: IndexMap<TilePos, ui::Rect>)
+    {
+        if self.0.len() >= self.1 as usize
+        {
+            self.0.pop_front();
+        }
+
+        self.0.push_back(tiles)
+    }
+
+    /// returns the last values added or `None` if the queue has been emptied
+    fn pop(&mut self) -> Option<IndexMap<TilePos, ui::Rect>>
+    {
+        self.0.pop_back()
+    }
+
+    fn clear(&mut self)
+    {
+        self.0.clear()
+    }
+}
+
+/// contains a path to the spritesheet image, 
+/// and the tile data 
+#[derive(Serialize,Deserialize)]
+struct SavedData
+{
+    /// the path to the spritesheet used
+    sprite_sheet: SpriteSheet,
+    tiles: Vec<(TilePos,ui::Rect)>
 }
