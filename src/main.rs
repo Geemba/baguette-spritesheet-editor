@@ -478,8 +478,10 @@ impl Application
             Some(ref sprite_sheet) => sprite_sheet.clone(),
             None =>
             {
-                self.select_spritesheet();
-                self.sprite_sheet.as_ref().unwrap().clone()
+                return bincode::Result::Err
+                (
+                    Box::new(bincode::ErrorKind::Custom("no spritesheet chosen yre".to_owned()))
+                )
             }
         };
 
